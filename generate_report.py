@@ -5,22 +5,92 @@ import json
 import os
 import re
 import gzip
+from math import inf
 
 def generate_report(viol_file):
+    # global vars
+    global rule_json_data
+    global rule_pipe_mapping
+    global interf_json_data
+    global unit_hier_mapping
+    global M_noscan_port_mapping
+    global M_merge_flop_mapping
+    global M_noscan_port_mapping
+    global all_neighbor_pars
+    global all_thr_paths 
 
-    load_def_region_files()    
+    rule_json_data = dict()
+    rule_pipe_mapping = dict()
+    interf_json_data = dict()
+    unit_hier_mapping = dict()
+    M_noscan_port_mapping = dict()
+    M_merge_flop_mapping = dict()
+    M_noscan_port_mapping = dict()
+    all_neighbor_pars = ()
+    all_thr_paths = ()
+
+    # load region/def files
+    if str(os.getenv("TS_VIEW")) != "ipo":
+        load_def_region_files()    
     
-    if os.path.exists(vio_file):
-        print("Loading "+str(vio_file))
-        read_timing_rep(vio_file) 
+    # load retime related files
+    load_retime_files() 
+    load_port_map_file() 
+    genUnitNameDict()
+
+    if str(os.getenv("TS_VIEW")) == "noscan" or str(os.getenv("TS_VIEW")) == "feflat":
+        get_all_neighbor_pars()
+        get_all_thr_paths() 
+
+    if str(os.getenv("TS_VIEW")) == "ipo":
+        map_merged_flops() 
+    
+    if os.path.exists(viol_file):
+        print("Loading "+str(viol_file))
+        read_timing_rep(viol_file) 
     else:
-        raise Exception ("Can't Find Vioaltion File "+str(vio_file))
+        raise Exception ("Can't Find Vioaltion File "+str(viol_file))
 
     vios = all_vios()
     print("Violation Num : "+str(vios.size())) 
 
+    # user-defined attribution
+    user_defined_attrs = [
+        'start_unit', 'end_unit',
+        'start_par', 'end_par',
+        'start_routeRule', 'end_routeRule',
+    ]
+
+    for user_defined_attr in user_defined_attrs:
+        if str(user_defined_attr) in Vio.user_attr_list():
+            pass
+        else:
+            Vio.create_user_attr(str(user_defined_attr))
+
+    # violation loop
     for vio in vios:
-        
+        start_pin = str(vio.start_pin())
+        end_pin = str(vio.end_pin())
+        vio_id = str(vio.core_id())
+    
+        start_unit = mapPinUnit(str(start_pin))
+        end_unit = mapPinUnit(str(end_pin))
+        start_par = get_pin_partition(str(start_pin))
+        end_par = get_pin_partition(str(end_pin))
+        start_routeRule = get_rule_of_pin(str(start_pin))
+        end_routeRule = get_rule_of_pin(str(end_pin))
+
+        vio.set_user_attr(Vio_attr("start_unit"), start_unit)
+        vio.set_user_attr(Vio_attr("end_unit"), end_unit)
+        vio.set_user_attr(Vio_attr("start_par"), start_par)
+        vio.set_user_attr(Vio_attr("end_par"), end_par)
+        vio.set_user_attr(Vio_attr("start_routeRule"), start_routeRule)
+        vio.set_user_attr(Vio_attr("end_routeRule"), end_routeRule)
+
+        if start_unit == "NA" or end_unit == "NA":
+            print(str(vio_id)+" "+str(vio.user_attr(Vio_attr("start_unit")))+" "+str(vio.user_attr(Vio_attr("end_unit")))+" ") 
+        else:
+            pass
 
 
 def load_retime_files(): 
@@ -116,15 +186,17 @@ def genUnitNameDict():
 def mapPinUnit(pin):
     global unit_hier_mapping
 
-    if not unit_hier_mapping: 
-        genUnitNameDict()
-    else:
-        pass
+    #if unit_hier_mapping in globals(): 
+    #    pass
+    #else:
+    #    genUnitNameDict()
 
-    for name in unit_hier_mapping:
+    for name in unit_hier_mapping.keys():
         match = re.match(name, pin) 
         if match:
-            return unit_hier_mapping[name] 
+            return(str(unit_hier_mapping[name]))
+
+    return("NA")
 
 def load_port_map_file():
     global M_noscan_port_mapping
@@ -235,7 +307,7 @@ def get_rule_of_pin(pin_name):
 
     pin = get_port(pin_name, name_is.quiet)
     if pin.is_port() is True and pin.is_null() is False:
-        return(rule) 
+        return(str(rule)) 
     else:
         pin = get_pin(pin_name, name_is.quiet)
         if pin.is_null() is True:
@@ -252,11 +324,13 @@ def get_rule_of_pin(pin_name):
         for chiplet in rule_pipe_mapping.keys():
             for rule_name in rule_pipe_mapping[chiplet].keys():
                 if step in rule_pipe_mapping[chiplet][rule_name].keys():
-                    return(rule_name)
+                    rule = rule_name
+                    return(str(rule))
                 else:
                     continue
+        return(str(rule))
     else:
-        return(rule)
+        return(str(rule))
 
 def get_point_dist(sx, sy, ex, ey):
     dist = abs(ex - sx) + abs (ey - sy)
@@ -266,7 +340,7 @@ def get_all_par_insts():
     all_par_insts = []
     all_refs_part = get_refs_if("*", lambda ref : ref.is_partition())
     for par_ref in all_refs_part:
-        par_insts = get_cells_of(str(par_ref))
+        par_insts = get_cells_of(str(par_ref), name_is.hier)
         for par_inst in par_insts:
             all_par_insts.append(str(par_inst))
     return(all_par_insts)
@@ -305,57 +379,99 @@ def get_all_neighbor_pars():
         all_neighbor_pars[par_inst] = get_neighbor_pars(par_inst)  
 
 # use Graph for get the shortest through path
-def find_all_path(start_vertex, end_vertex, path=[]):
-    global all_neighbor_pars
-
-    path = path + [start_vertex]
-    if start_vertex == end_vertex:
-        return [path]
-    if start_vertex not in all_neighbor_pars:
-        return []
-    paths = []
-    for vertex in all_neighbor_pars[start_vertex]:
-        if vertex not in path:
-            extended_paths = find_all_path(vertex, end_vertex, path)
-            for p in extended_paths:
-                paths.append(p)
-    return paths
-
-def get_shortest_path(paths):
-    min_len = ""
-    min_path = []
-    for path in paths:
-        leng = len(path)
-        if min_len:
-            if leng < min_len:
-                min_len = leng
-                min_path = path
-            else:
-                continue
-        else:
-            min_len = leng
-            min_path = path
-
-    return(min_path)
-
+# floyed-warshall
 def get_all_thr_paths():
+    global all_thr_paths
     global all_neighbor_pars
-    global all_thr_paths 
 
     all_thr_paths = dict()
-    
-    if not all_neighbor_pars:
-        get_all_neighbor_pars() 
 
-    all_par_insts = get_all_par_insts()
+    nxt = dict()
+    dist = dict()
 
-    for start_par in all_par_insts:
-        for end_par in all_par_insts:
-            full_paths = find_all_path(start_par, end_par)
-            thr_path = get_shortest_path(full_paths)
-            addtodict2(all_thr_paths, start_par, end_par, thr_path) 
+    edges = []
+    for node in all_neighbor_pars.keys():
+        for neighbour in all_neighbor_pars[node]:
+            edges.append((node, neighbour))
+
+    for i in all_neighbor_pars.keys():
+        for j in all_neighbor_pars.keys():
+            addtodict2(nxt, i, j, 0)
+            if i == j:
+                addtodict2(dist, i, j, 0)
+            else:
+                addtodict2(dist, i, j, inf)
+    for u, v in edges:
+        dist[u][v] = 1
+        nxt[u][v] = v
+    for k in all_neighbor_pars.keys():
+        for i in all_neighbor_pars.keys():
+            for j in all_neighbor_pars.keys():
+                sum_ik_kj = dist[i][k] + dist[k][j]
+                if dist[i][j] > sum_ik_kj:
+                    dist[i][j] = sum_ik_kj
+                    nxt[i][j] = nxt[i][k]
+    for i in all_neighbor_pars.keys():
+        for j in all_neighbor_pars.keys():
+            path = [i]
+            while path[-1] != j:
+                path.append(nxt[path[-1]][j])
+            addtodict2(all_thr_paths, str(i), str(j), path)
+
+#def find_all_path(start_vertex, end_vertex, path=[]):
+#    global all_neighbor_pars
+#
+#    path = path + [start_vertex]
+#    if start_vertex == end_vertex:
+#        return [path]
+#    if start_vertex not in all_neighbor_pars:
+#        return []
+#    paths = []
+#    for vertex in all_neighbor_pars[start_vertex]:
+#        if vertex not in path:
+#            extended_paths = find_all_path(vertex, end_vertex, path)
+#            for p in extended_paths:
+#                paths.append(p)
+#    return paths
+#
+#def get_shortest_path(paths):
+#    min_len = ""
+#    min_path = []
+#    for path in paths:
+#        leng = len(path)
+#        if min_len:
+#            if leng < min_len:
+#                min_len = leng
+#                min_path = path
+#            else:
+#                continue
+#        else:
+#            min_len = leng
+#            min_path = path
+#
+#    return(min_path)
+#
+#def get_all_thr_paths():
+#    global all_neighbor_pars
+#    global all_thr_paths 
+#
+#    all_thr_paths = dict()
+#    
+#    if not all_neighbor_pars:
+#        get_all_neighbor_pars() 
+#
+#    all_par_insts = get_all_par_insts()
+#
+#    for start_par in all_par_insts:
+#        for end_par in all_par_insts:
+#            full_paths = find_all_path(start_par, end_par)
+#            thr_path = get_shortest_path(full_paths)
+#            addtodict2(all_thr_paths, start_par, end_par, thr_path) 
 
 def get_pin_partition(pin_name):
+    if get_port(pin_name, name_is.quiet).is_null() is False:
+        return("PORT")
+
     cell = get_pin(pin_name).cell()
     if cell.base_ref().is_partition() is True:
         return(str(cell))
@@ -402,14 +518,16 @@ def load_def_region_files(replace=0,ipo_dir=None):
     all_refs_chiplet = get_refs_if("*", lambda ref : ref.is_chiplet())
     all_refs_macro   = get_refs_if("*", lambda ref : ref.is_macro())
 
+
+    # to fix. load _fp def for noscan/feflat, load pin def for flat
     # load macros def
     for ref_macro in all_refs_macro:
         # full_def
         macro_def_dir = str(ipo_dir)+"/macros/"+str(ref_macro)+"/control/"
         if os.path.exists(str(macro_def_dir)+str(ref_macro)+".def.gz"):
-            read_def(str(macro_def_dir)+str(ref_macro)+".def.gz", read_is.make_netlist)
+            read_def(str(macro_def_dir)+str(ref_macro)+".def.gz")
         elif os.path.exists(str(macro_def_dir)+str(ref_macro)+".def"):
-            read_def(str(macro_def_dir)+str(ref_macro)+".def", read_is.make_netlist)
+            read_def(str(macro_def_dir)+str(ref_macro)+".def")
         else:
             # print("# no def file found for "+str(ref_macro)) 
             pass
@@ -417,12 +535,17 @@ def load_def_region_files(replace=0,ipo_dir=None):
     # load partition def and region
     for ref_part in all_refs_part:
         part_def_dir = str(ipo_dir)+"/"+str(ref_part)+"/control/"
-        if os.path.exists(str(part_def_dir)+str(ref_part)+".hfp.pins.def"):
-            read_def(str(part_def_dir)+str(ref_part)+".hfp.pins.def", read_is.make_netlist)
-        elif os.path.exists(str(part_def_dir)+str(ref_part)+"_fp.def"):
-            read_def(str(part_def_dir)+str(ref_part)+"_fp.def", read_is.make_netlist)
+        if os.path.exists(str(part_def_dir)+str(ref_part)+"_fp.def"):
+            read_def(str(part_def_dir)+str(ref_part)+"_fp.def")
         else:
             print("# no def file found for "+str(ref_part))
+
+        #if os.path.exists(str(part_def_dir)+str(ref_part)+".hfp.pins.def"):
+        #    read_def(str(part_def_dir)+str(ref_part)+".hfp.pins.def", read_is.make_netlist)
+        #elif os.path.exists(str(part_def_dir)+str(ref_part)+"_fp.def"):
+        #    read_def(str(part_def_dir)+str(ref_part)+"_fp.def", read_is.make_netlist)
+        #else:
+        #    print("# no def file found for "+str(ref_part))
 
         if os.path.exists(str(part_def_dir)+str(ref_part)+"_RETIME.tcl"):
             # read_tcl(str(part_def_dir)+str(ref_part)+"_RETIME.tcl")
@@ -439,10 +562,15 @@ def load_def_region_files(replace=0,ipo_dir=None):
     # load chiplet def file        
     for ref_chiplet in all_refs_chiplet:
         chiplet_def_dir = str(ipo_dir)+"/"+str(ref_chiplet)+"/control/"
-        if os.path.exists(str(chiplet_def_dir)+str(ref_chiplet)+".hfp.pins.def"):
-            read_def(str(chiplet_def_dir)+str(ref_chiplet)+".hfp.pins.def", read_is.make_netlist)
-        elif os.path.exists(str(chiplet_def_dir)+str(ref_chiplet)+"_fp.def"):
-            read_def(str(chiplet_def_dir)+str(ref_chiplet)+"_fp.def", read_is.make_netlist)
+        if os.path.exists(str(chiplet_def_dir)+str(ref_chiplet)+"_fp.def"):
+            read_def(str(chiplet_def_dir)+str(ref_chiplet)+"_fp.def")
         else:
             print("# no def file found for "+str(ref_chiplet))
+
+        #if os.path.exists(str(chiplet_def_dir)+str(ref_chiplet)+".hfp.pins.def"):
+        #    read_def(str(chiplet_def_dir)+str(ref_chiplet)+".hfp.pins.def", read_is.make_netlist)
+        #elif os.path.exists(str(chiplet_def_dir)+str(ref_chiplet)+"_fp.def"):
+        #    read_def(str(chiplet_def_dir)+str(ref_chiplet)+"_fp.def", read_is.make_netlist)
+        #else:
+        #    print("# no def file found for "+str(ref_chiplet))
         
