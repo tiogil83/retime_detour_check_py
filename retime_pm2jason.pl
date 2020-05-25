@@ -71,12 +71,12 @@ system "mkdir -p $json_dir" ;
 open OUT, "> $rule_json_file" ;
 print OUT "$rule_json" ;
 close OUT ;
-print "Retime routeRules : $rule_json_file\n" ;
+#print "Retime routeRules : $rule_json_file\n" ;
 
 open OUT, "> $interf_json_file" ;
 print OUT "$interf_json" ;
 close OUT ;
-print "Retime interface  : $interf_json_file\n" ;
+#print "Retime interface  : $interf_json_file\n" ;
 
 
 #################

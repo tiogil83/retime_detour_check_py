@@ -1,17 +1,16 @@
 # !/home/tools/continuum/Anaconda3-5.0.0.1/bin/python3
 # !/usr/bin/python
 
-import json
 import os
 import re
 import gzip
 import time
+import json
 import multiprocessing
-from joblib import Parallel, delayed
 from math import inf
 
 def generate_report(viol_file):
-    # global vars
+    # global
     global rule_json_data
     global rule_pipe_mapping
     global interf_json_data
@@ -19,6 +18,7 @@ def generate_report(viol_file):
     global noscan_port_mapping
     global merge_flop_mapping
     global noscan_port_mapping
+    global all_par_insts
     global all_neighbor_pars
     global all_thr_paths 
 
@@ -29,9 +29,31 @@ def generate_report(viol_file):
     noscan_port_mapping = dict()
     merge_flop_mapping = dict()
     noscan_port_mapping = dict()
+    all_par_insts = []
     all_neighbor_pars = dict()
     all_thr_paths = dict()
 
+    # global for dumping reports
+    global glob_start_unit
+    global glob_end_unit
+    global glob_start_par
+    global glob_end_par
+    global glob_start_routeRule
+    global glob_end_routeRule
+    global glob_man_dist
+    global glob_feed_pars
+    global glob_feed_pars_num
+
+    glob_start_unit = multiprocessing.Manager().dict()
+    glob_end_unit = multiprocessing.Manager().dict()
+    glob_start_par = multiprocessing.Manager().dict()
+    glob_end_par = multiprocessing.Manager().dict()
+    glob_start_routeRule = multiprocessing.Manager().dict()
+    glob_end_routeRule = multiprocessing.Manager().dict()
+    glob_man_dist = multiprocessing.Manager().dict()
+    glob_feed_pars = multiprocessing.Manager().dict()
+    glob_feed_pars_num = multiprocessing.Manager().dict()
+ 
     # load region/def files
     if str(os.getenv("TS_VIEW")) != "ipo":
         load_def_region_files()    
@@ -49,15 +71,18 @@ def generate_report(viol_file):
         map_merged_flops() 
     
     if os.path.exists(viol_file):
-        print("Loading "+str(viol_file))
+        print("Loading "+str(viol_file)+"\n")
         #read_timing_rep(viol_file) 
     else:
-        raise Exception ("Can't Find Vioaltion File "+str(viol_file))
+        raise Exception ("Can't Find Vioaltion File "+str(viol_file)+"\n")
+
+    global vios
+    global vio_num
+    global counter
 
     vios = all_vios()
-    global vio_num
     vio_num = vios.size()
-    print("Violation Num : "+str(vio_num)) 
+    print("Total Violation Num : "+str(vio_num)+"\n") 
 
     # user-defined attribution
     user_defined_attrs = [
@@ -65,6 +90,7 @@ def generate_report(viol_file):
         'start_par', 'end_par',
         'start_routeRule', 'end_routeRule',
         'man_distance',
+        'feed_pars', 'feed_pars_num'
     ]
 
     for user_defined_attr in user_defined_attrs:
@@ -73,64 +99,107 @@ def generate_report(viol_file):
         else:
             Vio.create_user_attr(str(user_defined_attr))
 
-    print("stime : "+str(time.asctime(time.localtime(time.time()))))
-    for vio in vios:
-        set_vios_attri(vio)
-    # multi processing 
-    #
-    #num_cores = multiprocessing.cpu_count()
-    #Parallel(n_jobs=16)(delayed(set_vios_attri)(vio) for vio in vios)
-    #
-    print("etime : "+str(time.asctime(time.localtime(time.time()))))
+    stime = time.time()
     
-def set_vios_attri(vio):
+    counter = multiprocessing.Value('i',0)
+    num_cores = multiprocessing.cpu_count()
+    with multiprocessing.Pool(processes=num_cores) as pool:
+        pool.map(set_vios_attri, range(vio_num))
+    
+    etime = time.time()
+    print("Start Time : "+str(time.asctime(time.localtime(stime))))
+    print("End Time   : "+str(time.asctime(time.localtime(etime))))
+    print("Time Cost  : "+str(time_cost(etime-stime))+"\n")
+
+    
+def set_vios_attri(i):
+    global vios
     global vio_num
-    with open ("./vio_info.txt", 'a') as vio_info:
-        start_pin = str(vio.start_pin())
-        end_pin = str(vio.end_pin())
-        vio_id = str(vio.core_id())
-        
-        if int(vio_id) < 10000:
-            if int(vio_id) % 1000 == 0:
-                print("Processed "+str(vio_id)+" of "+str(vio_num))
-        elif vio_id == vio_num :
-            print ("Processed All the "+str(vio_num))
+
+    vio = vios[i]
+    start_pin = str(vio.start_pin())
+    end_pin = str(vio.end_pin())
+    vio_id = str(vio.core_id())
+    
+    with counter.get_lock():
+        counter.value += 1
+        cnt = counter.value
+        if int(cnt) < 10000 and int(cnt) % 1000 == 0:
+            print("Processed "+str(cnt)+" of "+str(vio_num)+" violations at "+str(time.asctime(time.localtime(time.time()))))
+        elif int(cnt) % 10000 == 0:
+            print("Processed "+str(cnt)+" of "+str(vio_num)+" violations at "+str(time.asctime(time.localtime(time.time()))))
+                #print("Processing ... "+str(time.asctime(time.localtime(time.time()))))
+        elif int(cnt) == int(vio_num):
+            print("All the "+str(vio_num)+" violations are precessed at "+str(time.asctime(time.localtime(time.time())))+"\n")
+         
+    
+    start_unit = mapPinUnit(str(start_pin))
+    end_unit = mapPinUnit(str(end_pin))
+    start_par = get_pin_partition(str(start_pin))
+    end_par = get_pin_partition(str(end_pin))
+    start_routeRule = get_rule_of_pin(str(start_pin))
+    end_routeRule = get_rule_of_pin(str(end_pin))
+    
+    vio.set_user_attr(Vio_attr("start_unit"), start_unit)
+    vio.set_user_attr(Vio_attr("end_unit"), end_unit)
+    vio.set_user_attr(Vio_attr("start_par"), start_par)
+    vio.set_user_attr(Vio_attr("end_par"), end_par)
+    vio.set_user_attr(Vio_attr("start_routeRule"), start_routeRule)
+    vio.set_user_attr(Vio_attr("end_routeRule"), end_routeRule)
+    
+    # set the not placed cells to parenct_cell centroid
+    if get_port(str(start_pin), name_is.quiet).is_null() is False: 
+        if get_port(str(start_pin)).is_placed() is True:
+            start_pin_xy = get_port(str(start_pin)).xy()
         else:
-            if int(vio_id) % 10000 == 0:
-                print("Processed "+str(vio_id)+" of "+str(vio_num))
-             
-        
-        start_unit = mapPinUnit(str(start_pin))
-        end_unit = mapPinUnit(str(end_pin))
-        start_par = get_pin_partition(str(start_pin))
-        end_par = get_pin_partition(str(end_pin))
-        start_routeRule = get_rule_of_pin(str(start_pin))
-        end_routeRule = get_rule_of_pin(str(end_pin))
-        
-        vio.set_user_attr(Vio_attr("start_unit"), start_unit)
-        vio.set_user_attr(Vio_attr("end_unit"), end_unit)
-        vio.set_user_attr(Vio_attr("start_par"), start_par)
-        vio.set_user_attr(Vio_attr("end_par"), end_par)
-        vio.set_user_attr(Vio_attr("start_routeRule"), start_routeRule)
-        vio.set_user_attr(Vio_attr("end_routeRule"), end_routeRule)
-        
-        #print(str(vio_id))
-        # set the not placed cells to parenct_cell centroid
+            start_pin.set_place(0,0)
+            start_pin_xy = get_port(str(start_pin)).xy()
+    else:
         if get_pin(str(start_pin)).is_placed() is True:
             start_pin_xy = get_pin(str(start_pin)).xy()
         else:
             start_pin_xy = set_cell_to_centroid(str(get_pin(str(start_pin)).cell()))
-        
+    
+    if get_port(str(end_pin), name_is.quiet).is_null() is False: 
+        if get_port(str(end_pin)).is_placed() is True:
+            end_pin_xy = get_port(str(end_pin)).xy()
+        else:
+            end_pin.set_place(0,0)
+            end_pin_xy = get_port(str(end_pin)).xy()
+    else:
         if get_pin(str(end_pin)).is_placed() is True:
             end_pin_xy = get_pin(str(end_pin)).xy()
         else:
             end_pin_xy = set_cell_to_centroid(str(get_pin(str(end_pin)).cell()))
-        
-        man_dist = str(start_pin_xy.xy_dist_to(end_pin_xy))
-        vio.set_user_attr(Vio_attr("man_distance"), man_dist)
-        
-        vio_info.write(f'{vio_id} {start_pin} {end_pin} {start_unit} {end_unit} {start_routeRule} {end_routeRule} {start_pin_xy} {end_pin_xy} {man_dist}\n')
+    
+    man_dist = str(start_pin_xy.xy_dist_to(end_pin_xy))
+    vio.set_user_attr(Vio_attr("man_distance"), man_dist)
 
+    # to fix get feed_pars, when can get real inter pins
+    if os.getenv("TS_VIEW") == "noscan" or os.getenv("TS_VIEW") == "feflat":
+        feed_pars = all_thr_paths[start_par][end_par] 
+        feed_pars_str = "->".join(feed_pars)
+        feed_pars_num = str(len(feed_pars)) 
+    else:
+        # to fix when flat and ipo
+        pass
+
+    vio.set_user_attr(Vio_attr("feed_pars"), feed_pars_str)
+    vio.set_user_attr(Vio_attr("feed_pars_num"), feed_pars_num)
+        
+    glob_start_unit[i] = start_unit
+    glob_end_unit[i] = end_unit
+    glob_start_par[i] = start_par
+    glob_end_par[i] = end_par
+    glob_start_routeRule[i] = start_routeRule
+    glob_end_routeRule[i] = end_routeRule
+    glob_man_dist[i] = man_dist
+    glob_feed_pars[i] = feed_pars_str
+    glob_feed_pars_num[i] = feed_pars_num
+
+def dump_reports():
+    # to fix. 
+    pass
 
 def load_retime_files(): 
     global rule_json_data
@@ -156,6 +225,7 @@ def load_retime_files():
     if os.path.exists(str(retime_json_dir)+"/routeRules.json"):
         with open(str(retime_json_dir)+"/routeRules.json", 'r') as rule_json_file:
             rule_json_data = json.load(rule_json_file)
+            print("Loading retime routeRules : "+str(retime_json_dir)+"/routeRules.json")
             # print(json.dumps(rule_json_data,indent=4,sort_keys=True))
     else:
         print("Rule Json Data "+str(retime_json_dir)+"/routeRules.json not found.")
@@ -163,6 +233,7 @@ def load_retime_files():
     if os.path.exists(str(retime_json_dir)+"/interface.json"):
         with open (str(retime_json_dir)+"/interface.json", 'r') as interf_json_file:
             interf_json_data = json.load(interf_json_file)
+            print("Loading retime interfaces : "+str(retime_json_dir)+"/interface.json")
             # print(json.dumps(interf_json_data,indent=4,sort_keys=True))
     else:
         print("Interface Json Data "+str(retime_json_dir)+"/interface.json not found.")
@@ -411,6 +482,7 @@ def get_neighbor_pars(par_inst):
 
 def get_all_neighbor_pars():
     global all_neighbor_pars
+    global all_par_insts
     all_neighbor_pars = dict()
 
     all_par_insts = get_all_par_insts()
@@ -475,8 +547,20 @@ def get_all_thr_paths():
 #
 
 def get_pin_partition(pin_name):
+    global all_par_insts
+
     if get_port(pin_name, name_is.quiet).is_null() is False:
-        return("PORT")
+        #return("PORT")
+        if get_port(pin_name).is_placed() is True:
+            # to fix in vivid
+            port = get_port(pin_name)
+            point1 = Point(float(float(str(port.x()))-0.0001), float(float(str(port.y()))-0.0001))
+            point2 = Point(float(float(str(port.x()))+0.0001), float(float(str(port.y()))+0.0001))
+            for par in all_par_insts:
+                if point1.is_inside(get_cell(par).bound()) is True or point2.is_inside(get_cell(par).bound()) is True:    
+                    return(str(par))
+        else:
+            return("UNPLACED_PORT")
 
     cell = get_pin(pin_name).cell()
     if cell.base_ref().is_partition() is True:
@@ -501,6 +585,8 @@ def load_def_region_files(replace=0,ipo_dir=None):
     ##########################
     # default option values
     ##########################
+    if os.getenv("TS_VIEW") == "ipo":
+        return("IPO Session, no need to re-load def/region files.")
 
     if ipo_dir is None:
         ipo_dir = os.getenv("IPO_DIR")
@@ -526,7 +612,6 @@ def load_def_region_files(replace=0,ipo_dir=None):
     all_refs_part    = get_refs_if("*", lambda ref : ref.is_partition())
     all_refs_chiplet = get_refs_if("*", lambda ref : ref.is_chiplet())
     all_refs_macro   = get_refs_if("*", lambda ref : ref.is_macro())
-
 
     # to fix. load _fp def for noscan/feflat, load pin def for flat
     # load macros def
@@ -574,7 +659,6 @@ def load_def_region_files(replace=0,ipo_dir=None):
         else:
             pass
 
-    
     # load chiplet def file        
     for ref_chiplet in all_refs_chiplet:
         chiplet_def_dir = str(ipo_dir)+"/"+str(ref_chiplet)+"/control/"
@@ -598,3 +682,9 @@ def set_cell_to_centroid(cell_name):
         return(get_cell(parent_cell).centroid())
     else:
         return(set_cell_to_centroid(str(parent_cell)))
+
+def time_cost(t):
+    h = int(int(t) / 3600)
+    m = int((int(t) - h * 3600)/60)
+    s = int(int(t) - h * 3600 - m * 60)
+    return(str(h)+" hours "+str(m)+" minutes "+str(s)+" seconds.")
